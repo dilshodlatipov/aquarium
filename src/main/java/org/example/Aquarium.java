@@ -5,9 +5,7 @@ import lombok.Setter;
 
 import java.util.Objects;
 import java.util.Random;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 @Getter
 @Setter
@@ -17,16 +15,15 @@ public class Aquarium implements Runnable {
     public static final int MAX_Y = 40;
     public static final int MAX_Z = 40;
     private static final int MAX_CAPACITY = 100;
-    private final ConcurrentHashMap<Location, Fish> fishes;
-    private final ExecutorService service;
-    private int capacity;
+    private final int capacity;
+    private volatile int size;
+    private final CopyOnWriteArrayList<Fish> fishes;
 
     public Aquarium(int capacity) {
         if (capacity > MAX_CAPACITY)
             throw new IllegalArgumentException();
         this.capacity = capacity;
-        fishes = new ConcurrentHashMap<>();
-        service = Executors.newFixedThreadPool(capacity);
+        fishes = new CopyOnWriteArrayList<>();
     }
 
     public void fillTheAquarium(int males, int females) {
@@ -38,37 +35,33 @@ public class Aquarium implements Runnable {
 
     private void fillTheAquarium(int count, boolean isMale) {
         for (int i = 0; i < count; i++) {
-            Location location = Location.getRandomLocation(MAX_X, MAX_Y, MAX_Z);
             Fish buildFish = Fish.builder()
                     .male(isMale)
                     .staysAlive(random.nextLong(0, Fish.FISH_MAX_LIFE))
-                    .location(location)
                     .aquarium(this)
                     .build();
-            Fish fish = fishes.put(location, buildFish);
-            while (Objects.nonNull(fish)) {
-                fish.getLocation().setRandomLocation(MAX_X, MAX_Y, MAX_Z);
-                fish = fishes.put(fish.getLocation(), fish);
-            }
+            long c = 0;
+            do {
+                buildFish.setLocation(Location.getRandomLocation(MAX_X, MAX_Y, MAX_Z));
+                c = fishes.stream().filter(fish -> Objects.equals(fish.getLocation(), buildFish.getLocation())).count();
+            } while (c != 0);
+            fishes.add(buildFish);
         }
     }
 
     @Override
     public void run() {
-        for (Fish value : fishes.values()) {
-            service.execute(value);
-            System.out.printf("%s fish with id: %d created at location: %s, left to live %s seconds\n", (value.isMale() ? "Male" : "Female"), value.getId(), value.getLocation().toString(), value.getStaysAlive());
-        }
-        while (!fishes.isEmpty() || service.isTerminated()) {
-            try {
-                Thread.sleep(1000);
-            } catch (InterruptedException e) {
-
+        try {
+            for (Fish value : fishes) {
+                new Thread(value).start();
+                size++;
             }
-        }
-        if (fishes.isEmpty()) {
+            while (size > 0) {
+                Thread.sleep(1000);
+            }
             System.out.println("All fishes died.");
-            service.shutdownNow();
+        } catch (InterruptedException e) {
+            System.out.println("Something went wrong");
         }
     }
 }

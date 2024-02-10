@@ -3,6 +3,7 @@ package org.example;
 import lombok.*;
 
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Random;
 
 @Getter
@@ -11,9 +12,9 @@ import java.util.Random;
 @NoArgsConstructor
 @Builder
 public class Fish implements Runnable {
-    public static final int FISH_MAX_LIFE = 1000;
+    public static final int FISH_MAX_LIFE = 100;
     private static final Random random = new Random();
-    private static int count;
+    private volatile static int count;
     @Builder.Default
     private int id = count;
     private boolean male;
@@ -23,27 +24,29 @@ public class Fish implements Runnable {
 
     {
         count++;
-        id = count;
     }
 
     @Override
     public void run() {
+        System.out.printf("%s fish with id: %d created at location: %s, left to live %s seconds\n", (this.isMale() ? "Male" : "Female"), this.getId(), this.getLocation().toString(), this.getStaysAlive());
         live();
-        aquarium.getFishes().remove(getLocation());
+        synchronized (aquarium) {
+            aquarium.setSize(aquarium.getSize() - 1);
+            aquarium.getFishes().remove(this);
+        }
         System.out.printf("Fish with id: %d died\n", id);
     }
 
     private synchronized void live() {
         try {
             while (staysAlive > 0) {
-                Fish fish, removed = fish = null;
-                removed = aquarium.getFishes().remove(getLocation());
+                long c = 0;
                 do {
-                    removed.move();
-                    fish = aquarium.getFishes().get(removed.getLocation());
-                    makeChild(removed, fish);
-                } while (Objects.nonNull(fish));
-                aquarium.getFishes().put(removed.getLocation(), removed);
+                    this.move();
+                    c = aquarium.getFishes().stream().filter(value -> Objects.equals(value.location, this.location) && this.isMale() != value.isMale()).count();
+                    while (c-- >= 1)
+                        makeChild(this);
+                } while (c > 0);
                 Thread.sleep(1000);
                 staysAlive--;
             }
@@ -55,7 +58,7 @@ public class Fish implements Runnable {
         }
     }
 
-    private void move() {
+    public void move() {
         int x = getRandomPoint(Aquarium.MAX_X - 1, 1, location.getX(), 1);
         int y = getRandomPoint(Aquarium.MAX_Y - 1, 1, location.getY(), 1);
         int z = getRandomPoint(Aquarium.MAX_Z - 1, 1, location.getZ(), 1);
@@ -65,26 +68,29 @@ public class Fish implements Runnable {
         System.out.printf("Fish with the id: %d moved to this location: %s, left to live: %d seconds\n", id, location.toString(), staysAlive);
     }
 
-    private synchronized void makeChild(Fish fish1, Fish fish2) {
-        if (Objects.nonNull(fish1) && Objects.nonNull(fish2) && ((fish1.male && !fish2.male) || (!fish1.male && fish2.male))) {
-            if (aquarium.getFishes().size() >= aquarium.getCapacity()) {
+    private synchronized void makeChild(Fish fish) {
+        if (Objects.nonNull(fish)) {
+            if (aquarium.getSize() >= aquarium.getCapacity()) {
                 System.out.println("Aquarium filled.");
-                aquarium.getService().shutdownNow();
+                return;
             }
             Fish child = Fish.builder()
                     .aquarium(aquarium)
                     .male(random.nextBoolean())
-                    .location(fish1.getLocation().clone())
+                    .location(fish.getLocation().clone())
                     .staysAlive(random.nextLong(0, FISH_MAX_LIFE))
                     .build();
-            Fish fish = null;
+            Optional<Fish> any;
             do {
                 child.move();
-                fish = aquarium.getFishes().get(child.getLocation());
-            } while (Objects.nonNull(fish));
-            aquarium.getFishes().put(child.getLocation(), child);
-            aquarium.getService().execute(child);
-            System.out.printf("Fishes with id : %d and %d created a %s child with id: %d\n", fish1.id, fish2.id, (child.isMale() ? "male" : "female"), child.id);
+                any = aquarium.getFishes().stream().filter(value -> Objects.equals(child.location, value.location)).findAny();
+            } while (any.isPresent());
+            aquarium.getFishes().add(child);
+            new Thread(child).start();
+            synchronized (aquarium) {
+                aquarium.setSize(aquarium.getSize() + 1);
+            }
+            System.out.printf("A %s child with id: %d created\n", (child.isMale() ? "male" : "female"), child.id);
         }
 
     }
